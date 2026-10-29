@@ -11,6 +11,7 @@
 #include "sleep.h"
 #include "wav_payload.h"
 #include "battery.h"
+#include "buttons.h"
 #include <atomic>
 
 extern "C" {
@@ -330,6 +331,10 @@ bool playRecording(int noteNum) {
     played = played || ok;
     if (cancelled || !ok) break;
   }
+  // The tap that stopped playback must not count as a new action: on release
+  // it would replay the note, and held it would open the delete prompt.
+  while (digitalRead(BTN_REC) == LOW) delay(5);
+  clearButtonPresses();
   // Playback blocks the loop; restart the sleep timer so the device stays awake.
   resetActivity();
   return played;
