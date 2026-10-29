@@ -147,7 +147,8 @@ void startRecordFlow() {
   state = STATE_RECORDING;
 
   soundSetEnabled(false);
-  bool recOk = record();
+  bool recLowBattery = false;
+  bool recOk = record(&recLowBattery);
   soundSetEnabled(true);
 
   if (!recOk) {
@@ -173,6 +174,16 @@ void startRecordFlow() {
   state = STATE_SAVED;
   showSaved(lastRecNum);
   delay(900);
+
+  // Recording was stopped by the battery guard: warn, then sleep instead of
+  // waiting on the tag screen with an almost empty cell.
+  if (recLowBattery) {
+    showBatteryLow(readBatteryPercent());
+    enterErrorSleep();
+    state = STATE_IDLE;
+    showIdle();
+    return;
+  }
 
   tagCursor = min(2, max(tagCount - 1, 0));
   state = STATE_TAG_SELECT;
@@ -259,6 +270,11 @@ void startTransferMode() {
 
 // ─── Setup ────────────────────────────────────────────────────────────────
 void setup() {
+  // A PWR press only powers the board while held, so latch battery power
+  // first. Power rails sit behind the I2C expander, so the bus comes up first.
+  i2c_master_Init();
+  board.VBAT_POWER_ON();
+
   Serial.begin(115200);
   delay(300);
   Serial.println("\n=== Voice Recorder " FIRMWARE_VERSION " ===");
@@ -270,10 +286,6 @@ void setup() {
   pinMode(BTN_REC, INPUT_PULLUP);
   beginButtonCapture();
   pinMode(BTN_PWR, INPUT_PULLUP);
-
-  // Power rails sit behind the I2C expander, so the bus comes up first.
-  i2c_master_Init();
-  board.VBAT_POWER_ON();
 
   wokeFromUltraSleep  = (esp_sleep_get_wakeup_cause() == ESP_SLEEP_WAKEUP_EXT1);
   delay(50);

@@ -10,6 +10,7 @@
 #include "ui.h"
 #include "sleep.h"
 #include "wav_payload.h"
+#include "battery.h"
 #include <atomic>
 
 extern "C" {
@@ -108,7 +109,8 @@ uint32_t recordingDurationSeconds(int noteNum) {
   return seconds;
 }
 
-bool record() {
+bool record(bool* lowBattery) {
+  if (lowBattery) *lowBattery = false;
   int num = nextNoteNumber();
   if (num <= 0) return false;
   int part = 1;
@@ -129,6 +131,8 @@ bool record() {
   uint32_t totalMono = 0, partBytes = 0, started = millis(), partStarted = started, lastCheckpoint = started;
   uint32_t pressedAt = 0;
   bool wasPressed = false, stop = false, controlsArmed = false;
+  uint32_t lastBatCheck = started;
+  int lowBatReads = 0;
 
   while (!stop && millis() - started < RECORD_MAX_MS) {
     if (audio_playback_read((void*)sbuf, REC_BUF) != 0) { audioOk = false; break; }
@@ -162,6 +166,19 @@ bool record() {
       lastCheckpoint = millis();
       const uint64_t total = SDCard.totalBytes(), used = SDCard.usedBytes();
       if (used >= total || total - used < RECORD_MIN_FREE_BYTES) stop = true;
+    }
+    // Stop and save before the cell browns out. Two low reads in a row, so a
+    // single load spike does not end the recording.
+    if (!stop && millis() - lastBatCheck >= BAT_REC_CHECK_MS) {
+      lastBatCheck = millis();
+      const float v = readBatteryVoltageFast();
+      if (v > 0.1f && v < BAT_REC_CUTOFF_V) lowBatReads++;
+      else lowBatReads = 0;
+      if (lowBatReads >= BAT_REC_CUTOFF_READS) {
+        Serial.printf("[Rec] battery low (%.2f V), stopping\n", v);
+        if (lowBattery) *lowBattery = true;
+        stop = true;
+      }
     }
   }
 

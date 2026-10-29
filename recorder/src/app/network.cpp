@@ -70,11 +70,20 @@ String partTranscriptPath(int noteNum, int part) {
 }
 }
 
-static bool transcribeOnce(const String& wavPath, const String& textPath) {
+// Uploads one range of PCM data as a WAV of its own. OpenAI stops reading a
+// request body after about 60 s, so a whole 10-minute part (~19 MB) cannot
+// make it at the recorder's ~250 KB/s; transcribeFile() sends it in pieces.
+static bool transcribeOnce(File& file, uint32_t dataOffset, uint32_t dataBytes, String& text) {
   transcriptionRetryable = false;
-  File file = SDCard.open(wavPath.c_str());
-  if (!file || file.size() <= 44 || file.size() > 25UL * 1024UL * 1024UL) return false;
-  const size_t fileSize = file.size();
+  uint8_t wavHeader[44];
+  const uint32_t riffSize = dataBytes + 36, fmtLength = 16, sampleRate = SAMPLE_RATE, byteRate = SAMPLE_RATE * 2;
+  const uint16_t audioFormat = 1, channels = 1, blockAlign = 2, bits = 16;
+  memcpy(wavHeader, "RIFF", 4); memcpy(wavHeader + 4, &riffSize, 4); memcpy(wavHeader + 8, "WAVEfmt ", 8);
+  memcpy(wavHeader + 16, &fmtLength, 4); memcpy(wavHeader + 20, &audioFormat, 2); memcpy(wavHeader + 22, &channels, 2);
+  memcpy(wavHeader + 24, &sampleRate, 4); memcpy(wavHeader + 28, &byteRate, 4); memcpy(wavHeader + 32, &blockAlign, 2);
+  memcpy(wavHeader + 34, &bits, 2); memcpy(wavHeader + 36, "data", 4); memcpy(wavHeader + 40, &dataBytes, 4);
+  const size_t fileSize = sizeof(wavHeader) + dataBytes;
+  if (!file.seek(dataOffset)) return false;
   String boundary = "----RecorderBoundary";
   String pre = "--" + boundary + "\r\nContent-Disposition: form-data; name=\"model\"\r\n\r\n" TRANSCRIBE_MODEL "\r\n"
     "--" + boundary + "\r\nContent-Disposition: form-data; name=\"languages[]\"\r\n\r\n" TRANSCRIBE_LANGUAGE "\r\n"
@@ -85,36 +94,45 @@ static bool transcribeOnce(const String& wavPath, const String& textPath) {
   client.setHandshakeTimeout(12);
   client.setTimeout(15);
   const uint32_t started = millis();
+  // Allow ~64 KB/s for the upload on top of the base budget, and give the
+  // server time to transcribe before it answers.
+  const uint32_t limitMs = 90000UL + fileSize / 64;
   const auto now = []() { return millis(); };
   const auto yield = []() { delay(1); };
   transcriptionRetryable = true;
-  if (!client.connect("api.openai.com", 443)) return false;
+  if (!client.connect("api.openai.com", 443)) {
+    char err[100] = "";
+    client.lastError(err, sizeof(err));
+    Serial.printf("[Transcribe] connect failed: %s\n", err);
+    return false;
+  }
   const String header = "POST /v1/audio/transcriptions HTTP/1.1\r\nHost: api.openai.com\r\nAuthorization: Bearer " +
     classicOpenAiKey() + "\r\nContent-Type: multipart/form-data; boundary=" + boundary +
     "\r\nContent-Length: " + String(pre.length() + fileSize + post.length()) +
     "\r\nAccept-Encoding: identity\r\nConnection: close\r\n\r\n";
   const auto send = [&](const String& value) {
-    return classicWriteAll(client, (const uint8_t*)value.c_str(), value.length(), now, yield, started, 90000);
+    return classicWriteAll(client, (const uint8_t*)value.c_str(), value.length(), now, yield, started, limitMs);
   };
-  bool sent = send(header) && send(pre);
+  bool sent = send(header) && send(pre) &&
+    classicWriteAll(client, wavHeader, sizeof(wavHeader), now, yield, started, limitMs);
   uint8_t buffer[4096];
-  size_t remaining = fileSize;
+  size_t remaining = dataBytes;
   while (sent && remaining) {
     const size_t count = file.read(buffer, min<size_t>(sizeof(buffer), remaining));
     if (!count) { transcriptionRetryable = false; sent = false; break; }
     remaining -= count;
-    sent = classicWriteAll(client, buffer, count, now, yield, started, 90000);
+    sent = classicWriteAll(client, buffer, count, now, yield, started, limitMs);
   }
-  file.close();
   sent = sent && send(post);
   HttpResponseBuffer response(128 * 1024);
-  const bool complete = sent && receiveFramedHttp(client, response, now, yield, started, 90000, 30000);
+  const bool complete = sent && receiveFramedHttp(client, response, now, yield, started, limitMs, 120000);
   client.stop();
   if (!complete || response.status != 200) {
     transcriptionRetryable = transcriptionRetryable && (classicTransientStatus(response.status) ||
       (response.status == 200 && !complete));
-    Serial.printf("[Transcribe] failed status=%d framing=%s\n", response.status,
-                  response.error ? response.error : (complete ? "complete" : "timeout"));
+    Serial.printf("[Transcribe] failed status=%d framing=%s sent=%s after %lu s (%u bytes)\n", response.status,
+                  response.error ? response.error : (complete ? "complete" : "timeout"),
+                  sent ? "yes" : "no", (unsigned long)((millis() - started) / 1000), (unsigned)fileSize);
     if (response.status >= 400 && response.body.size())
       Serial.printf("[Transcribe] %.*s\n", (int)min<size_t>(response.body.size(), 400), response.body.c_str());
     return false;
@@ -123,19 +141,39 @@ static bool transcribeOnce(const String& wavPath, const String& textPath) {
   JsonDocument doc;
   if (deserializeJson(doc, response.body.c_str(), response.body.size()) ||
       !doc["text"].is<const char*>()) return false;
-  String text = doc["text"].as<String>();
+  text = doc["text"].as<String>();
   text.trim();
-  return text.length() && storeTranscript(textPath, text);
+  return true;
 }
 
 static bool transcribeFile(const String& wavPath, const String& textPath) {
-  for (int attempt = 0; attempt < 2; ++attempt) {
-    if (WiFi.status() != WL_CONNECTED) return false;
-    if (transcribeOnce(wavPath, textPath)) return true;
-    if (!transcriptionRetryable || attempt == 1) break;
-    delay(1000);
+  transcriptionRetryable = false;
+  File file = SDCard.open(wavPath.c_str());
+  if (!file || file.size() <= 44) {
+    Serial.printf("[Transcribe] skipped %s: %s, %u bytes\n", wavPath.c_str(),
+                  file ? "bad size" : "cannot open", file ? (unsigned)file.size() : 0U);
+    return false;
   }
-  return false;
+  const uint32_t dataBytes = (file.size() - 44) & ~1UL;
+  String text;
+  for (uint32_t offset = 0, length = 0; offset < dataBytes; offset += length) {
+    length = min<uint32_t>(TRANSCRIBE_PIECE_BYTES, dataBytes - offset);
+    // OpenAI rejects a sliver of audio as corrupted: fold a short tail into this piece.
+    if (dataBytes - offset - length < TRANSCRIBE_PIECE_MIN_BYTES) length = dataBytes - offset;
+    String piece;
+    bool ok = false;
+    for (int attempt = 0; attempt < 2 && !ok; ++attempt) {
+      if (WiFi.status() != WL_CONNECTED) { file.close(); return false; }
+      if (attempt) delay(1000);
+      ok = transcribeOnce(file, 44 + offset, length, piece);
+      if (!ok && !transcriptionRetryable) break;
+    }
+    if (!ok) { file.close(); return false; }
+    if (piece.length() && text.length()) text += ' ';
+    text += piece;
+  }
+  file.close();
+  return text.length() && storeTranscript(textPath, text);
 }
 
 bool transcribe(const String& wavPath, int noteNum) {

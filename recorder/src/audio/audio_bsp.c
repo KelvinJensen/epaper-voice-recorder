@@ -9,7 +9,18 @@
 #include "../codec_board/codec_init.h"
 #include "../esp_codec_dev/include/esp_codec_dev.h"
 #include "esp_heap_caps.h"
+#include "../i2c_bsp/i2c_bsp.h"
+#include "../../config.h"
 #endif
+
+static void amp_set(uint8_t on)
+{
+#ifndef AUDIO_BSP_HOST_TEST
+    exio_set_level(AMP_PWR_PIN, on);
+#else
+    (void)on;
+#endif
+}
 
 static esp_codec_dev_handle_t playback = NULL;
 static esp_codec_dev_handle_t record   = NULL;
@@ -23,7 +34,10 @@ static esp_codec_dev_sample_info_t sample_info = {
 void audio_idle_suspend(void)
 {
     if (record_open && esp_codec_dev_close(record) == ESP_CODEC_DEV_OK) record_open = false;
-    if (playback_open && esp_codec_dev_close(playback) == ESP_CODEC_DEV_OK) playback_open = false;
+    if (playback_open) {
+        amp_set(0);
+        if (esp_codec_dev_close(playback) == ESP_CODEC_DEV_OK) playback_open = false;
+    }
 }
 
 void audio_prepare_sleep(void)
@@ -91,6 +105,8 @@ int audio_playback_write(void *data_ptr, uint32_t len)
         if (esp_codec_dev_set_out_vol(playback, requested_volume) != ESP_CODEC_DEV_OK) {
             audio_idle_suspend(); return ESP_CODEC_DEV_WRONG_STATE;
         }
+        // The amplifier settles during the codec's start-up delay.
+        amp_set(1);
         vTaskDelay(pdMS_TO_TICKS(25));
     }
     return esp_codec_dev_write(playback, data_ptr, len);

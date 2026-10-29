@@ -4,7 +4,7 @@ Firmware for a pocket voice recorder with an e-paper screen. It records audio to
 a microSD card, transcribes recordings with the OpenAI API and serves a small web
 portal on your local network for listening, reading and tagging notes.
 
-Firmware version 1.2.0-rc9. The user interface and portal are in Danish.
+Firmware version 1.2.0-rc10. The user interface and portal are in Danish.
 
 ## Hardware
 
@@ -14,7 +14,7 @@ Waveshare ESP32-C6-ePaper-1.54 with a microSD card formatted as FAT32.
   (address 0x20), so I2C starts before anything is powered.
 - The microSD card runs over SPI on the display's bus (`src/storage/sd_card.*`);
   the display driver locks the bus for each transfer.
-- There is no PSRAM, and the deep-sleep wake button is PWR on GPIO 2.
+- There is no PSRAM, and the power and wake button is PWR on GPIO 2.
 
 ## Secrets
 
@@ -74,6 +74,26 @@ the screen.
 Recordings and transcripts are stored on the SD card under `/notes`. Back up
 that directory before experimenting with storage formats. The portal has no
 login, so only use it on a trusted private network.
+
+## Power and battery
+
+- After 45 seconds without activity (15 minutes in Transfer), the recorder
+  shows a locked Home screen and switches itself off. The e-paper keeps that
+  image without power.
+- On battery this is a full power-off: the firmware releases the battery latch
+  (`BAT_Control`, TCA9554 pin 5). Holding the latch costs about 2.5 mA, because
+  its transistor is driven through a 1 kΩ base resistor, so deep sleep with the
+  latch held would empty a 450 mAh cell in about a week.
+- Hold PWR until the screen reacts to switch the recorder on. The firmware
+  latches battery power as the first step of startup.
+- On USB the board cannot power itself off, so it falls back to deep sleep and
+  wakes on PWR.
+- The PCF85063 clock has its own supply from the battery, so the time survives
+  power-off.
+- The speaker amplifier is only switched on while a sound or playback is
+  running, not while idle or recording.
+- Recording stops and is saved when the battery stays below 3.45 V under load.
+  The battery percentage follows a typical LiPo discharge curve.
 
 ## Make changes
 

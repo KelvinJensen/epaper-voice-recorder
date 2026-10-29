@@ -73,7 +73,12 @@ static void powerDownAndSleep() {
   board.POWEER_Audio_OFF();
   board.POWEER_EPD_OFF();
 
-  board.VBAT_POWER_ON();
+  // Holding the battery latch costs ~2.5 mA (T2 base current via R64 1K), far
+  // more than deep sleep itself. On battery, releasing it powers the board off;
+  // the e-paper keeps the locked Home screen and PWR powers it back on.
+  board.VBAT_POWER_OFF();
+  delay(500);
 
+  // Still running: USB is supplying VSYS. Deep sleep until PWR instead.
   esp_deep_sleep_start();
 }

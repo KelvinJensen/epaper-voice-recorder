@@ -69,7 +69,7 @@
 #define REC_HOLD_MS         350
 #define BTN_LONG_MS         600
 #define DOUBLE_MS           200
-#define ULTRA_SLEEP_MS      120000UL
+#define ULTRA_SLEEP_MS      45000UL
 #define TRANSFER_IDLE_MS    900000UL
 #define ERROR_SLEEP_AFTER_MS 30000UL
 #define TICKER_INTERVAL_MS  2500
@@ -78,10 +78,16 @@
 #define BAT_CHECK_INTERVAL_MS  30000
 #define BAT_LOW_THRESHOLD      15
 #define BAT_RECOVER_THRESHOLD  20
+/* Recording stops and saves when the loaded cell stays below this voltage */
+#define BAT_REC_CHECK_MS       10000
+#define BAT_REC_CUTOFF_V       3.45f
+#define BAT_REC_CUTOFF_READS   2
 
 /* Transcription (OpenAI) */
 #define TRANSCRIBE_MODEL       "gpt-transcribe"
 #define TRANSCRIBE_LANGUAGE    "da"
+#define TRANSCRIBE_PIECE_BYTES (SAMPLE_RATE * 2UL * 120UL)  // 2 min per upload, ~3.8 MB
+#define TRANSCRIBE_PIECE_MIN_BYTES (SAMPLE_RATE * 2UL * 10UL)  // shorter tails join the piece before
 
 /* Text shown at the bottom of the idle screen */
 #define DEVICE_LABEL           "VOICE RECORDER"
@@ -89,7 +95,7 @@
 /* Time & firmware */
 #define LOCAL_TZ_RULE          "CET-1CEST,M3.5.0,M10.5.0/3"
 #ifndef RECORDER_VERSION
-#define RECORDER_VERSION   "1.2.0-rc9"
+#define RECORDER_VERSION   "1.2.0-rc10"
 #endif
 #define FIRMWARE_VERSION       "v" RECORDER_VERSION
 #define FW_VERSION             FIRMWARE_VERSION

@@ -25,9 +25,10 @@ void board_power_bsp_t::POWEER_EPD_OFF() {
     exio_set_level(epd_power_pin,0);
 }
 
+// The speaker amplifier stays off here; audio_bsp switches it on only while
+// playback is open, so it does not draw current while idle or recording.
 void board_power_bsp_t::POWEER_Audio_ON() {
     exio_set_level(audio_power_pin,1);
-    exio_set_level(AMP_PWR_PIN,1);
 }
 
 void board_power_bsp_t::POWEER_Audio_OFF() {
